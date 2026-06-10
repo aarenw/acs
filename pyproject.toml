@@ -1,7 +1,17 @@
 [project]
 name = "acs"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "ACS platform CVE exception automation (RHSDA dual-track matching)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
+
+[project.scripts]
+platform-fp-check = "acs.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["acs"]

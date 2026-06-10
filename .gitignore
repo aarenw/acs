@@ -10,3 +10,8 @@ wheels/
 .venv
 
 roxctl
+
+# Local data and secrets
+data/
+config/*.env
+!config/example.env

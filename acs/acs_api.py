@@ -291,6 +291,17 @@ def _finalize_row(row: dict[str, str], meta_cache: dict[str, dict[str, str]]) ->
     return row
 
 
+def _first_jsonl_line(raw: str) -> tuple[str, int]:
+    total = 0
+    first = ""
+    for line in raw.splitlines():
+        if line.strip():
+            total += 1
+            if not first:
+                first = line
+    return (f"{first}\n" if first else raw, total)
+
+
 def _read_jsonl_export(path: Path) -> Iterator[dict[str, Any]]:
     with path.open(encoding="utf-8") as fh:
         for line in fh:
@@ -382,6 +393,12 @@ def export_and_summarize(settings: Settings) -> tuple[Path, Path]:
         bearer_token=settings.rox_api_token,
         insecure=settings.rox_insecure_skip_tls_verify,
     )
+    if settings.dry_run:
+        raw, total_lines = _first_jsonl_line(raw)
+        log.warning(
+            "DRY_RUN=true: using only first export line (%d total lines fetched)",
+            total_lines,
+        )
     jsonl.write_text(raw, encoding="utf-8")
     log.info("saved raw export to %s (%d bytes)", jsonl, jsonl.stat().st_size)
     build_summary_tsv(settings, jsonl, summary)

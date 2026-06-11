@@ -14,6 +14,8 @@ GO_MODULE_RE = re.compile(
 )
 OCP_VERSION_RE = re.compile(r"openshift:([0-9]+\.[0-9]+)")
 OCP_MAJOR_RE = re.compile(r"openshift:([0-9]+)(?:::|:|$)")
+OCP_PRODUCT_MINOR_RE = re.compile(r"OpenShift Container Platform (4\.\d+)")
+CONTAINER_FIX_VERSION_RE = re.compile(r"v?(4\.\d+\.\d+)")
 RPM_BASE_RE = re.compile(r"^([a-zA-Z0-9_.+-]+)-[0-9]")
 ARCH_SUFFIXES = (".src", ".x86_64", ".aarch64", ".noarch", ".i686", ".ppc64le", ".s390x")
 
@@ -130,44 +132,137 @@ def parse_ocp_version_from_cpe(cpe: str) -> str:
     return m.group(1) if m else ""
 
 
+def is_ocp_major_umbrella_product(product_name: str) -> bool:
+    if OCP_PRODUCT_MINOR_RE.search(product_name):
+        return False
+    return "OpenShift Container Platform 4" in product_name
+
+
+def parse_openshift_version_from_product(product_name: str) -> str:
+    m = OCP_PRODUCT_MINOR_RE.search(product_name)
+    if m:
+        return m.group(1)
+    if is_ocp_major_umbrella_product(product_name):
+        return "4"
+    return ""
+
+
+def version_tuple(version: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for piece in version.split("."):
+        if piece.isdigit():
+            parts.append(int(piece))
+    return tuple(parts) if parts else (0,)
+
+
+def version_compare(left: str, right: str) -> int:
+    a = version_tuple(left)
+    b = version_tuple(right)
+    width = max(len(a), len(b))
+    a = a + (0,) * (width - len(a))
+    b = b + (0,) * (width - len(b))
+    if a < b:
+        return -1
+    if a > b:
+        return 1
+    return 0
+
+
+def version_gte(left: str, right: str) -> bool:
+    return version_compare(left, right) >= 0
+
+
+def version_lte(left: str, right: str) -> bool:
+    return version_compare(left, right) <= 0
+
+
+def cpe_product_score(
+    row_cpe: str,
+    entry_cpe: str,
+    *,
+    allow_minor_compat: bool = False,
+) -> int:
+    """Score RHSDA entry CPE against the workload product CPE.
+
+    package_state often uses the major umbrella ``openshift:4`` while
+    affected_release uses minor streams like ``openshift:4.19::el9``.
+    """
+    if not row_cpe or not entry_cpe:
+        return 0
+    row_v = parse_ocp_version_from_cpe(row_cpe)
+    entry_v = parse_ocp_version_from_cpe(entry_cpe)
+    if row_v and entry_v:
+        if row_v == entry_v:
+            return 3
+        if entry_v == "4" and row_v.startswith("4."):
+            return 2
+        if (
+            allow_minor_compat
+            and row_v.startswith("4.")
+            and entry_v.startswith("4.")
+            and version_lte(entry_v, row_v)
+        ):
+            return 2
+    if row_cpe.startswith(entry_cpe) or entry_cpe.startswith(row_cpe):
+        return 1
+    return 0
+
+
+def parse_container_fix_version(
+    package: str,
+    product_name: str = "",
+    entry_cpe: str = "",
+) -> str:
+    if ":" in package:
+        tag = package.split(":", 1)[1]
+        m = CONTAINER_FIX_VERSION_RE.search(tag)
+        if m:
+            major, minor, *_rest = m.group(1).split(".")
+            return f"{major}.{minor}"
+    return parse_openshift_version_from_product(product_name) or parse_ocp_version_from_cpe(
+        entry_cpe
+    )
+
+
 def derive_product_context(settings: Settings, product_cpe: str, remote: str) -> dict[str, Any]:
     ocp_version = parse_ocp_version_from_cpe(product_cpe) if product_cpe else ""
-    specific_regex = ""
-    broad_regex = ""
-    if ocp_version:
-        specific_regex = f"OpenShift Container Platform {re.escape(ocp_version)}"
-        minor = ocp_version.split(".", 1)[1] if "." in ocp_version else ocp_version
-        broad_regex = (
-            rf"OpenShift Container Platform 4(\.{re.escape(minor)})?"
-            r"|OpenShift Container Platform 4[^0-9]|OpenShift Container Platform 4$"
-        )
-    elif remote.startswith("openshift4/"):
-        broad_regex = r"OpenShift Container Platform 4|OpenShift"
     return {
         "env_regex": settings.rhsda_product_regex,
-        "specific_regex": specific_regex or None,
-        "broad_regex": broad_regex or None,
         "ocp_version": ocp_version or None,
         "product_cpe": product_cpe or None,
     }
 
 
 def product_entry_score(
-    settings: Settings, product_name: str, entry_cpe: str, ctx: dict[str, Any]
+    settings: Settings,
+    product_name: str,
+    entry_cpe: str,
+    ctx: dict[str, Any],
+    *,
+    entry_kind: str = "package_state",
 ) -> int:
-    score = 0
-    if settings.product_regex.search(product_name):
-        score = 1
-    specific = ctx.get("specific_regex")
-    broad = ctx.get("broad_regex")
     row_cpe = ctx.get("product_cpe") or ""
-    if specific and re.search(specific, product_name):
-        score = 3
-    elif broad and re.search(broad, product_name):
-        score = 2
-    elif score == 0 and row_cpe and entry_cpe:
-        if entry_cpe.startswith(row_cpe) or row_cpe.startswith(entry_cpe):
-            score = 1
+    row_ocp = ctx.get("ocp_version") or ""
+    allow_minor_compat = entry_kind == "affected_release"
+    entry_ocp = parse_openshift_version_from_product(product_name) or parse_ocp_version_from_cpe(
+        entry_cpe
+    )
+
+    score = cpe_product_score(row_cpe, entry_cpe, allow_minor_compat=allow_minor_compat)
+    if row_ocp and entry_ocp == row_ocp:
+        score = max(score, 3)
+    elif is_ocp_major_umbrella_product(product_name) and row_ocp:
+        score = max(score, 2)
+    elif (
+        allow_minor_compat
+        and entry_ocp
+        and row_ocp
+        and entry_ocp.startswith("4.")
+        and version_lte(entry_ocp, row_ocp)
+    ):
+        score = max(score, 2)
+    elif settings.product_regex.search(product_name):
+        score = max(score, 1)
     return score
 
 
@@ -176,12 +271,33 @@ def component_package_matches(rhsda_pkg: str, component: str) -> bool:
     return rhsda_pkg == norm or rhsda_pkg == component or rhsda_pkg.lower() == norm.lower()
 
 
+def is_rhsda_cve_not_found(detail: dict[str, Any] | None) -> bool:
+    """True when RHSDA returns ``{"message": "Not Found"}`` for a CVE lookup."""
+    if not detail or not isinstance(detail, dict):
+        return False
+    if detail.get("message") != "Not Found":
+        return False
+    return not detail.get("name") and not detail.get("package_state")
+
+
 def format_rhsda_exception_comment(
     settings: Settings, summary: dict[str, Any], exception_type: str
 ) -> str:
     prefix = settings.exception_comment_prefix
     if not summary:
         return f"{prefix}: auto platform-fp-check ({exception_type})"
+    if summary.get("match_kind") == "inherent_not_affected":
+        cluster = summary.get("cluster_ocp_version", "n/a")
+        return (
+            f"{prefix}: Inherently not affected, Not Affected (no versioned RHSDA match on OCP {cluster}) | "
+            f"component={summary.get('component', 'n/a')} | "
+            f"CVE={summary.get('cve', 'n/a')}"
+        )
+    if summary.get("match_kind") == "not_found":
+        return (
+            f"{prefix}: CVE not found in Red Hat Security database | "
+            f"CVE={summary.get('cve', 'n/a')}"
+        )
     if exception_type == "deferral":
         return (
             f"{prefix} fix_state {summary.get('fix_state', 'unknown')} | "
@@ -191,8 +307,9 @@ def format_rhsda_exception_comment(
             f"CVE={summary.get('cve', 'n/a')}"
         )
     if summary.get("match_kind") == "affected_release":
+        fixed_in = summary.get("fixed_in_version", "n/a")
         return (
-            f"{prefix}: affected_release fixed | "
+            f"{prefix}: affected_release fixed in {fixed_in} | "
             f"product={summary.get('product_name', 'n/a')} | "
             f"package={summary.get('package_name', 'n/a')} | "
             f"match_track={summary.get('match_track', 'n/a')} | "

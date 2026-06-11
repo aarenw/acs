@@ -65,6 +65,15 @@ acs_export_platform_vulns() {
   log_info "exporting platform vulnerabilities (query: ${query}, client timeout: ${ACS_EXPORT_TIMEOUT}s)"
   acs_curl GET "/v1/export/vuln-mgmt/workloads?query=${encoded_query}&timeout=${ACS_EXPORT_SERVER_TIMEOUT}" \
     "" "${ACS_EXPORT_TIMEOUT}" >"${output_file}"
+
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    local total_lines first_line
+    total_lines="$(grep -c '[^[:space:]]' "${output_file}" 2>/dev/null || echo 0)"
+    first_line="$(grep -m1 '[^[:space:]]' "${output_file}" || true)"
+    printf '%s\n' "${first_line}" >"${output_file}"
+    log_warn "DRY_RUN=true: using only first export line (${total_lines} total lines fetched)"
+  fi
+
   log_info "saved raw export to ${output_file} ($(wc -c <"${output_file}" | tr -d ' ') bytes)"
 }
 

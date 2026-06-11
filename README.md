@@ -289,3 +289,41 @@ https://access.redhat.com/hydra/rest/securitydata/
 ```bash
 ./scripts/lib/rhsda.sh get-cve CVE-2014-0160
 ```
+## ocp 大小版本
+注意在红帽安全数据（Red Hat Security Data API / CVE JSON）中，经常会看到同一个漏洞的报告里，既赫然写着 Red Hat OpenShift Container Platform x（大版本），又并行列着 Red Hat OpenShift Container Platform x.y（具体次要版本）。 
+这种看似“套娃”和重复的非规范设计，实际上是红帽为了兼顾资产追溯的高效性和补丁交付的精确性，在安全工程领域故意采用的双轨制追踪策略。
+
+主要原因可以拆解为以下三个核心逻辑：
+
+1. 资产大伞 vs 补丁流（CPE 继承逻辑）
+在通用平台枚举（CPE）标准中，资产分为“产品线”和“具体发布版”。
+
+openshift x（产品大伞）： 用来做粗颗粒度的资产定性。在红帽内部，整个 OpenShift 4 核心架构（从 4.1 到 4.20+）共享大量的核心组件代码和上游开源逻辑。当一个全局漏洞（如 Go 语言底层漏洞、Linux 内核漏洞）爆发时，安全团队会首先在系统里把大标签 openshift 4 标记为 affected（受影响），以便企业资产管理系统能在一秒钟内筛选出“所有运行 OCP 4 的集群全部拉警报”。
+
+openshift x.y（具体的生命周期流）：
+用来做细颗粒度的补丁交付。因为红帽不可能发布一个叫“OpenShift 4 补丁”的东西，补丁必须打包成具体的 4.16.x、4.18.x 或 4.20.x 的 z-stream（小版本更新）。因此，在负责记录“哪里修好了”的 affected_release 字段里，必须精确到 4.20。
+
+2. 漏洞表现的“跨版本差异”
+并不是所有的漏洞在所有 4.x 版本里表现都一样。引入这两个层级能完美解决这个问题：
+
+场景 A（全军覆没型）： 一个属于 Kubernetes 核心机制的漏洞。红帽会直接在 package_state 里写上 openshift 4 为 under investigation（调查中）或 affected，代表这一代产品都跑不掉。
+
+场景 B（版本特异型）： 某个新功能（例如特定的 OVN-Kubernetes 插件特性）是在 4.18 才引入的，4.16 没有，而 4.20 已经默认开启。
+这时，红帽安全团队就无法使用模糊的 openshift 4 了，他们必须在数据里显式拆分：
+
+Red Hat OpenShift Container Platform 4.16: not_affected
+
+Red Hat OpenShift Container Platform 4.20: affected
+
+3. 红帽安全漏洞库的历史演进
+如果你观察早期的 OCP 4 漏洞（如 2020-2022 年），红帽在 package_state（漏洞状态栏）里几乎只写 Red Hat OpenShift Container Platform 4，不写具体的小版本。
+
+但是随着扫描器（Trivy、Grype、Prisma Cloud）的普及，这种粗放的写法导致了海量的误报——因为用户明明升级到了 4.12 已经安全了，但扫描器读到红帽的 openshift 4: affected，依然在疯狂报警。
+
+为了解决这个问题，红帽安全团队在近几年改变了策略：
+
+新策略： 针对仍在支持生命周期内的活跃版本（如当前的 4.16、4.18、4.20 等），在安全数据中强行进行扁平化展开。这就是为什么现在你既能看到用于兼容老旧扫描器的总包标签 openshift 4，又能看到一长串并列的 4.16、4.18、4.20 具体状态。
+
+### 检查规则
+先检查package_state，  openshift 先用Red Hat OpenShift Container Platform x, 比如Red Hat OpenShift Container Platform 4 去匹配product_name, 正对fix_state 为  `Not affected` 的，需要在后继处理中标记为false positive 
+

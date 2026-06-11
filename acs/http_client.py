@@ -13,6 +13,9 @@ log = logging.getLogger(__name__)
 
 from acs.config import Settings
 
+# Red Hat CDN blocks the default Python-urllib User-Agent (HTTP 403).
+RHSDA_USER_AGENT = "acs-platform-fp-check/1.0"
+
 
 
 def _build_opener_for(settings: Settings, insecure: bool | None) -> urllib.request.OpenerDirector:
@@ -114,23 +117,52 @@ class RhsdaClient:
         self.base = settings.rhsda_base_url.rstrip("/")
         self._cache: dict[str, dict[str, Any]] = {}
 
+    @staticmethod
+    def _detail_from_http_error(exc: RuntimeError) -> dict[str, Any]:
+        msg = str(exc)
+        if ": " not in msg:
+            return {}
+        body = msg.rsplit(": ", 1)[-1]
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
     def get_cve(self, cve: str, *, quiet: bool = False) -> dict[str, Any]:
         if cve in self._cache:
             return self._cache[cve]
         url = f"{self.base}/cve/{cve}.json"
+        detail: dict[str, Any] = {}
+        fetch_error: str | None = None
         try:
             detail = http_request(
                 self.settings,
                 "GET",
                 url,
                 timeout=self.settings.rhsda_timeout,
+                headers={"User-Agent": RHSDA_USER_AGENT},
             )
-        except Exception:
+            if not detail:
+                fetch_error = "empty response"
+        except RuntimeError as exc:
+            if quiet and "HTTP 404" in str(exc):
+                detail = self._detail_from_http_error(exc)
+                if not detail:
+                    fetch_error = str(exc)
+            elif quiet:
+                fetch_error = str(exc)
+            else:
+                raise
+        except Exception as exc:
             if quiet:
-                detail = {}
+                fetch_error = f"{type(exc).__name__}: {exc}"
             else:
                 raise
         if not isinstance(detail, dict):
             detail = {}
+        if fetch_error:
+            detail = {"_rhsda_fetch_error": fetch_error}
+            log.warning("%s: RHSDA fetch failed: %s", cve, fetch_error)
         self._cache[cve] = detail
         return detail

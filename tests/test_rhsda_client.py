@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from acs.config import Settings
-from acs.http_client import RHSDA_USER_AGENT, RhsdaClient
+from acs.http_client import RHSDA_HTTP_404, RHSDA_USER_AGENT, RhsdaClient
 
 
 class TestRhsdaClient(unittest.TestCase):
@@ -30,12 +30,12 @@ class TestRhsdaClient(unittest.TestCase):
         self.assertTrue(any("RHSDA fetch failed" in msg for msg in logs.output))
 
     @patch("acs.http_client.http_request")
-    def test_get_cve_http_404_not_fetch_error(self, mock_request) -> None:
+    def test_get_cve_http_404_marker_without_parsing_body(self, mock_request) -> None:
         mock_request.side_effect = RuntimeError(
             'HTTP 404 https://example/cve/CVE-2099.json: {"message":"Not Found"}'
         )
         detail = self.client.get_cve("CVE-2099-00001", quiet=True)
-        self.assertEqual(detail, {"message": "Not Found"})
+        self.assertEqual(detail, {RHSDA_HTTP_404: True})
         self.assertNotIn("_rhsda_fetch_error", detail)
 
 

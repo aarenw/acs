@@ -62,7 +62,7 @@ class Settings:
     acs_api_timeout: int = 300
     acs_export_timeout: int = 900
     acs_export_server_timeout: int = 600
-    defer_expiry_days: int = 90
+    defer_expiry_months: int = 1
     exception_comment_prefix: str = "RHSDA"
     https_proxy: str = ""
     http_proxy: str = ""
@@ -104,7 +104,7 @@ class Settings:
             acs_api_timeout=int(os.environ.get("ACS_API_TIMEOUT", "300")),
             acs_export_timeout=int(os.environ.get("ACS_EXPORT_TIMEOUT", "900")),
             acs_export_server_timeout=int(os.environ.get("ACS_EXPORT_SERVER_TIMEOUT", "600")),
-            defer_expiry_days=int(os.environ.get("DEFER_EXPIRY_DAYS", "90")),
+            defer_expiry_months=int(os.environ.get("DEFER_EXPIRY_MONTHS", "1")),
             exception_comment_prefix=os.environ.get("EXCEPTION_COMMENT_PREFIX", "RHSDA"),
             https_proxy=os.environ.get("HTTPS_PROXY", ""),
             http_proxy=os.environ.get("HTTP_PROXY", ""),

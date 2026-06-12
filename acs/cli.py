@@ -9,6 +9,7 @@ from pathlib import Path
 
 from acs.acs_api import build_summary_tsv, export_and_summarize
 from acs.apply import apply_results
+from acs.purge_exceptions import purge_fp_defer_exceptions
 from acs.config import Settings, load_default_env, load_env_file
 from acs.rhsda_check import check_summary
 from acs.common import timestamp_utc
@@ -41,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_apply = sub.add_parser("apply", help="Create and approve FP/deferral exceptions in ACS")
     p_apply.add_argument("--results", required=True, help="Path to rhsda-check JSON")
+
+    sub.add_parser(
+        "purge-exceptions",
+        help="Cancel approved or delete pending false-positive/deferral exceptions",
+    )
 
     sub.add_parser("run", help="export -> check -> apply (full pipeline)")
     return parser
@@ -76,6 +82,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "apply":
         out = settings.results_dir / f"exception-actions-{timestamp_utc()}.json"
         path = apply_results(settings, Path(args.results), out)
+        print(path)
+        return 0
+
+    if args.command == "purge-exceptions":
+        out = settings.results_dir / f"exception-purge-{timestamp_utc()}.json"
+        path = purge_fp_defer_exceptions(settings, out)
         print(path)
         return 0
 

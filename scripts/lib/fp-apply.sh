@@ -29,8 +29,10 @@ exception_already_exists() {
   local cve="$4"
   local target_state="$5"
   local existing_json="$6"
+  local scope_tag
+  scope_tag="$(acs_image_scope_tag "${tag}")"
 
-  echo "${existing_json}" | jq -e --arg reg "${registry}" --arg rem "${remote}" --arg tg "${tag}" \
+  echo "${existing_json}" | jq -e --arg reg "${registry}" --arg rem "${remote}" --arg tg "${scope_tag}" \
     --arg cve "${cve}" --arg target "${target_state}" '
     .exceptions[]?
     | select(.targetState == $target or .target_state == $target)
@@ -50,13 +52,15 @@ create_false_positive() {
   local tag="$3"
   local cves_json="$4"
   local comment="$5"
+  local scope_tag
+  scope_tag="$(acs_image_scope_tag "${tag}")"
 
   local body
   body="$(jq -n \
     --argjson cves "${cves_json}" \
     --arg registry "${registry}" \
     --arg remote "${remote}" \
-    --arg tag "${tag}" \
+    --arg tag "${scope_tag}" \
     --arg comment "${comment}" \
     '{
       cves: $cves,
@@ -74,20 +78,22 @@ create_deferral() {
   local cves_json="$4"
   local comment="$5"
   local expires_on="$6"
+  local scope_tag
+  scope_tag="$(acs_image_scope_tag "${tag}")"
 
   local body
   body="$(jq -n \
     --argjson cves "${cves_json}" \
     --arg registry "${registry}" \
     --arg remote "${remote}" \
-    --arg tag "${tag}" \
+    --arg tag "${scope_tag}" \
     --arg comment "${comment}" \
     --arg expires_on "${expires_on}" \
     '{
       cves: $cves,
       scope: { imageScope: { registry: $registry, remote: $remote, tag: $tag } },
       comment: $comment,
-      expiresOn: $expires_on
+      exceptionExpiry: { expiryType: "TIME", expiresOn: $expires_on }
     }')"
 
   acs_curl POST "/v2/vulnerability-exceptions/deferral" "${body}"
@@ -108,11 +114,14 @@ pick_group_rhsda_summary() {
   local remote="$3"
   local tag="$4"
   local decision="$5"
+  local reason="$6"
 
-  jq -c --arg reg "${registry}" --arg rem "${remote}" --arg tg "${tag}" --arg dec "${decision}" '
+  jq -c --arg reg "${registry}" --arg rem "${remote}" --arg tg "${tag}" \
+    --arg dec "${decision}" --arg reason "${reason}" '
     [.results[]
       | select(.decision == $dec)
       | select(.registry == $reg and .remote == $rem and .tag == $tg)
+      | select(.reason == $reason)
       | .rhsda_summary // {}
     ][0] // {}
   ' "${results_file}"
@@ -124,10 +133,11 @@ process_exception_group() {
   local registry="$3"
   local remote="$4"
   local tag="$5"
-  local cves_csv="$6"
-  local results_file="$7"
-  local existing_json="$8"
-  local expires_on="${9:-}"
+  local reason="$6"
+  local cves_csv="$7"
+  local results_file="$8"
+  local existing_json="$9"
+  local expires_on="${10:-}"
 
   local -a actions=()
   local cves_json action comment approve_comment
@@ -135,9 +145,9 @@ process_exception_group() {
 
   local summary_json
   if [[ "${exception_type}" == "deferral" ]]; then
-    summary_json="$(pick_group_rhsda_summary "${results_file}" "${registry}" "${remote}" "${tag}" "candidate_defer")"
+    summary_json="$(pick_group_rhsda_summary "${results_file}" "${registry}" "${remote}" "${tag}" "candidate_defer" "${reason}")"
   else
-    summary_json="$(pick_group_rhsda_summary "${results_file}" "${registry}" "${remote}" "${tag}" "candidate_fp")"
+    summary_json="$(pick_group_rhsda_summary "${results_file}" "${registry}" "${remote}" "${tag}" "candidate_fp" "${reason}")"
   fi
   comment="$(format_rhsda_exception_comment "${summary_json}" "${exception_type}")"
   if [[ "${cves_csv}" == *","* ]]; then
@@ -170,8 +180,9 @@ process_exception_group() {
     action="$(jq -n \
       --arg registry "${registry}" --arg remote "${remote}" --arg tag "${tag}" \
       --arg exception_type "${exception_type}" --arg comment "${comment}" \
+      --arg check_reason "${reason}" \
       --argjson cves "${cves_json}" \
-      '{status:"dry_run", exception_type:$exception_type, registry:$registry, remote:$remote, tag:$tag, cves:$cves, comment:$comment}')"
+      '{status:"dry_run", exception_type:$exception_type, registry:$registry, remote:$remote, tag:$tag, check_reason:$check_reason, cves:$cves, comment:$comment}')"
     actions+=("${action}")
     printf '%s\n' "${actions[@]}"
     return 0
@@ -231,8 +242,9 @@ process_exception_group() {
     --arg status "${status}" --arg err_msg "${err_msg}" --arg approved_id "${approved_id}" \
     --arg registry "${registry}" --arg remote "${remote}" --arg tag "${tag}" \
     --arg exception_type "${exception_type}" --arg comment "${comment}" \
+    --arg check_reason "${reason}" \
     --argjson cves "${cves_json}" \
-    '{status:$status, exception_type:$exception_type, registry:$registry, remote:$remote, tag:$tag, cves:$cves, comment:$comment, approved_id:$approved_id, response:., error:(if $err_msg == "" then null else $err_msg end)}')"
+    '{status:$status, exception_type:$exception_type, registry:$registry, remote:$remote, tag:$tag, check_reason:$check_reason, cves:$cves, comment:$comment, approved_id:$approved_id, response:., error:(if $err_msg == "" then null else $err_msg end)}')"
   actions+=("${action}")
   printf '%s\n' "${actions[@]}"
 }
@@ -264,37 +276,37 @@ fp_apply_results() {
 
   jq -r '
     [.results[] | select(.decision == "candidate_fp")]
-    | group_by(.registry + "|" + .remote + "|" + .tag)
+    | group_by(.registry + "|" + .remote + "|" + .tag + "|" + (.reason // ""))
     | .[]
-    | [.registry, .remote, .tag, ([.[].cve] | unique | join(","))] | @tsv
+    | [.registry, .remote, .tag, (.[0].reason // ""), ([.[].cve] | unique | join(","))] | @tsv
   ' "${results_file}" >"${fp_groups}"
 
   jq -r '
     [.results[] | select(.decision == "candidate_defer")]
-    | group_by(.registry + "|" + .remote + "|" + .tag)
+    | group_by(.registry + "|" + .remote + "|" + .tag + "|" + (.reason // ""))
     | .[]
-    | [.registry, .remote, .tag, ([.[].cve] | unique | join(","))] | @tsv
+    | [.registry, .remote, .tag, (.[0].reason // ""), ([.[].cve] | unique | join(","))] | @tsv
   ' "${results_file}" >"${defer_groups}"
 
   local -a actions=()
-  local registry remote tag cves_csv group_actions action line
+  local registry remote tag check_reason cves_csv group_actions action line
 
-  while IFS=$'\t' read -r registry remote tag cves_csv; do
+  while IFS=$'\t' read -r registry remote tag check_reason cves_csv; do
     [[ -z "${registry}" ]] && continue
     while IFS= read -r line; do
       [[ -z "${line}" ]] && continue
       actions+=("${line}")
     done < <(process_exception_group "false_positive" "FALSE_POSITIVE" \
-      "${registry}" "${remote}" "${tag}" "${cves_csv}" "${results_file}" "${existing_json}")
+      "${registry}" "${remote}" "${tag}" "${check_reason}" "${cves_csv}" "${results_file}" "${existing_json}")
   done <"${fp_groups}"
 
-  while IFS=$'\t' read -r registry remote tag cves_csv; do
+  while IFS=$'\t' read -r registry remote tag check_reason cves_csv; do
     [[ -z "${registry}" ]] && continue
     while IFS= read -r line; do
       [[ -z "${line}" ]] && continue
       actions+=("${line}")
     done < <(process_exception_group "deferral" "DEFERRED" \
-      "${registry}" "${remote}" "${tag}" "${cves_csv}" "${results_file}" "${existing_json}" "${expires_on}")
+      "${registry}" "${remote}" "${tag}" "${check_reason}" "${cves_csv}" "${results_file}" "${existing_json}" "${expires_on}")
   done <"${defer_groups}"
 
   rm -f "${fp_groups}" "${defer_groups}"

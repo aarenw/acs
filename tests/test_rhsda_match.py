@@ -190,6 +190,30 @@ class TestRhsdaMatching(unittest.TestCase):
         )
         self.assertIn("CVE not found in Red Hat Security database", comment)
 
+    def test_rhsda_http_404_is_candidate_fp(self) -> None:
+        from acs.http_client import RHSDA_HTTP_404
+
+        client = MagicMock()
+        client.get_cve.return_value = {RHSDA_HTTP_404: True}
+        row = {
+            "cve": "CVE-2099-40401",
+            "component": "example.com/foo",
+            "version": "1.0",
+            "product_cpe": "cpe:/a:redhat:openshift:4.20::el9",
+            "rhsda_container_ids": "openshift4/ose-foo-rhel9",
+        }
+        result = evaluate_vuln_row(self.settings, client, row)
+        self.assertEqual(result["decision"], "candidate_fp")
+        self.assertEqual(
+            result["reason"],
+            "This CVE does not affect Red Hat software, return 404.",
+        )
+        self.assertEqual(result["rhsda_summary"].get("match_kind"), "http_404")
+        comment = format_rhsda_exception_comment(
+            self.settings, result["rhsda_summary"], "false-positive"
+        )
+        self.assertIn("does not affect Red Hat software, return 404", comment)
+
     def test_rhsda_fetch_failure_reports_reason(self) -> None:
         client = MagicMock()
         client.get_cve.return_value = {

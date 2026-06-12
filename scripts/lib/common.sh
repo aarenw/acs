@@ -18,7 +18,7 @@ RESULTS_DIR="${OUTPUT_DIR}/results"
 RHSDA_PRODUCT_REGEX="${RHSDA_PRODUCT_REGEX:-OpenShift|RHCOS|Red Hat Enterprise Linux CoreOS}"
 ACS_EXPORT_QUERY="${ACS_EXPORT_QUERY:-Platform Component:true}"
 DRY_RUN="${DRY_RUN:-false}"
-DEFER_EXPIRY_DAYS="${DEFER_EXPIRY_DAYS:-90}"
+DEFER_EXPIRY_MONTHS="${DEFER_EXPIRY_MONTHS:-1}"
 ACS_ENRICH_LABELS="${ACS_ENRICH_LABELS:-true}"
 EXCEPTION_COMMENT_PREFIX="${EXCEPTION_COMMENT_PREFIX:-RHSDA}"
 
@@ -137,6 +137,16 @@ parse_image_name() {
   fi
 
   printf '%s\t%s\t%s' "${registry}" "${remote}" "${tag}"
+}
+
+# ACS imageScope.tag: digest refs (sha256:...) must be sent as empty string.
+acs_image_scope_tag() {
+  local tag="$1"
+  if [[ "${tag}" == sha256* ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  printf '%s' "${tag}"
 }
 
 # 从 RPM 全名提取 base package，如 openssl-1.1.1k-7.el8_5.x86_64 -> openssl
@@ -288,12 +298,12 @@ format_rhsda_exception_comment() {
     '
 }
 
-# deferral expires_on（UTC ISO8601）
+# deferral expires_on（UTC ISO8601，当前时间 + DEFER_EXPIRY_MONTHS 自然月）
 defer_expires_on() {
-  local days="${DEFER_EXPIRY_DAYS}"
-  if date -u -v+"${days}"d +"%Y-%m-%dT%H:%M:%SZ" >/dev/null 2>&1; then
-    date -u -v+"${days}"d +"%Y-%m-%dT%H:%M:%SZ"
+  local months="${DEFER_EXPIRY_MONTHS:-1}"
+  if date -u -v+"${months}m" +"%Y-%m-%dT%H:%M:%SZ" >/dev/null 2>&1; then
+    date -u -v+"${months}m" +"%Y-%m-%dT%H:%M:%SZ"
   else
-    date -u -d "+${days} days" +"%Y-%m-%dT%H:%M:%SZ"
+    date -u -d "+${months} month" +"%Y-%m-%dT%H:%M:%SZ"
   fi
 }

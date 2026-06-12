@@ -29,7 +29,7 @@ from acs.common import (
     version_tuple,
 )
 from acs.config import Settings
-from acs.http_client import RhsdaClient
+from acs.http_client import RHSDA_HTTP_404, RhsdaClient
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ _INHERENT_NOT_AFFECTED_REASON = "Inherently not affected, Not Affected"
 _VERSIONED_PRODUCT_MIN_SCORE = 2
 _ADVERSIVE_FIX_STATES = frozenset({"Affected", "Under investigation"})
 DECISION_TOBEUPGRADE = "tobeupgrade"
+RHSDA_HTTP_404_REASON = "This CVE does not affect Red Hat software, return 404."
 
 
 def _decision_from_fix_state(fix_state: str) -> str:
@@ -418,6 +419,31 @@ def evaluate_vuln_row(
     evidence: dict[str, Any] = {}
 
     detail = client.get_cve(cve, quiet=True)
+    if isinstance(detail, dict) and detail.get(RHSDA_HTTP_404):
+        match_track = "rhsda_lookup"
+        reason = RHSDA_HTTP_404_REASON
+        summary = {
+            "cve": cve,
+            "match_track": match_track,
+            "match_kind": "http_404",
+            "fix_state": "not_in_rhsda",
+        }
+        evidence = {"rhsda_lookup": "http_404"}
+        log.info(
+            "%s %s: RHSDA HTTP 404 — marking candidate_fp (does not affect Red Hat software)",
+            cve,
+            component,
+        )
+        return _result(
+            cve,
+            component,
+            version,
+            "candidate_fp",
+            reason,
+            match_track,
+            summary,
+            evidence,
+        )
     fetch_error = detail.get("_rhsda_fetch_error") if isinstance(detail, dict) else None
     if fetch_error:
         reason = f"RHSDA fetch failed: {fetch_error}"

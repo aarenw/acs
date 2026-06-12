@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import calendar
 import re
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from acs.config import Settings
@@ -69,6 +70,18 @@ def parse_image_name(image_ref: str) -> tuple[str, str, str]:
         registry = "docker.io"
 
     return registry, remote, tag
+
+
+def acs_image_scope_tag(tag: str) -> str:
+    """Return the tag field for ACS v2 imageScope.
+
+    ACS does not accept digest strings (``sha256:...``) as imageScope.tag.
+    Export/summary may store the digest in ``tag`` for grouping; API calls
+    must send an empty tag for digest-pinned images.
+    """
+    if tag.startswith("sha256"):
+        return ""
+    return tag
 
 
 def normalize_rpm_package_name(name: str) -> str:
@@ -293,6 +306,11 @@ def format_rhsda_exception_comment(
             f"component={summary.get('component', 'n/a')} | "
             f"CVE={summary.get('cve', 'n/a')}"
         )
+    if summary.get("match_kind") == "http_404":
+        return (
+            f"{prefix}: This CVE does not affect Red Hat software, return 404. | "
+            f"CVE={summary.get('cve', 'n/a')}"
+        )
     if summary.get("match_kind") == "not_found":
         return (
             f"{prefix}: CVE not found in Red Hat Security database | "
@@ -324,9 +342,29 @@ def format_rhsda_exception_comment(
     )
 
 
+DEFER_EXPIRY_TYPE = "TIME"
+
+
+def add_months(dt: datetime, months: int) -> datetime:
+    month_index = dt.month - 1 + months
+    year = dt.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
+
+
 def defer_expires_on(settings: Settings) -> str:
-    dt = datetime.now(timezone.utc) + timedelta(days=settings.defer_expiry_days)
+    dt = add_months(datetime.now(timezone.utc), settings.defer_expiry_months)
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def defer_expiry_fields(settings: Settings) -> dict[str, Any]:
+    return {
+        "exceptionExpiry": {
+            "expiryType": DEFER_EXPIRY_TYPE,
+            "expiresOn": defer_expires_on(settings),
+        }
+    }
 
 
 def rpm_parse_evr(pkg: str) -> tuple[str, str, str]:
